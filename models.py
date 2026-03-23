@@ -85,7 +85,7 @@ class CaseExtraction(BaseModel):
         date:                   Decision date (YYYY-MM-DD format, time stripped)
         url:                    Link to the full decision
         judge:                  Surname of the judge who decided the case
-        lawyer_applicant:       Lawyer representing the migrant (the non-citizen,
+        lawyer_migrant:       Lawyer representing the migrant (the non-citizen,
                                 regardless of whether they are applicant or respondent)
         lawyer_respondent:      Lawyer representing the other side (usually the Crown)
         category:               One of: RAD, PRRA, RPD, IAD, H&C, Visa,
@@ -122,7 +122,7 @@ class CaseExtraction(BaseModel):
     date: str
     url: str
     judge: str
-    lawyer_applicant: str
+    lawyer_migrant: str
     lawyer_respondent: str
     category: str
     disposition: str

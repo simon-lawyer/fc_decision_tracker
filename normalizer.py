@@ -246,7 +246,7 @@ def normalize_case(case: CaseExtraction) -> CaseExtraction:
     return case.model_copy(update={
         "judge": normalize_judge(case.judge),
         "nationality": normalize_nationality(case.nationality),
-        "lawyer_applicant": normalize_lawyer(case.lawyer_applicant),
+        "lawyer_migrant": normalize_lawyer(case.lawyer_migrant),
         "lawyer_respondent": normalize_lawyer(case.lawyer_respondent),
     })
 
@@ -265,15 +265,15 @@ def reconcile(new_cases: list[CaseExtraction], existing_cases: list[dict]) -> No
 
     Args:
         new_cases:      The newly extracted CaseExtraction objects (already normalized).
-        existing_cases: Rows from the master CSV (list of dicts from csv_manager.load_master()).
+        existing_cases: Rows from the database (list of dicts from db_manager.load_master()).
     """
     # Build sets of existing unique values from the CSV.
     existing_judges = {row["judge"] for row in existing_cases if row.get("judge")}
     existing_nationalities = {row["nationality"] for row in existing_cases if row.get("nationality")}
     existing_lawyers = set()
     for row in existing_cases:
-        if row.get("lawyer_applicant"):
-            existing_lawyers.add(row["lawyer_applicant"])
+        if row.get("lawyer_migrant"):
+            existing_lawyers.add(row["lawyer_migrant"])
         if row.get("lawyer_respondent"):
             existing_lawyers.add(row["lawyer_respondent"])
 
@@ -282,7 +282,7 @@ def reconcile(new_cases: list[CaseExtraction], existing_cases: list[dict]) -> No
     new_nationalities = {c.nationality for c in new_cases if c.nationality}
     new_lawyers = set()
     for c in new_cases:
-        new_lawyers.add(c.lawyer_applicant)
+        new_lawyers.add(c.lawyer_migrant)
         new_lawyers.add(c.lawyer_respondent)
 
     # Find values that are new (not in the existing CSV).

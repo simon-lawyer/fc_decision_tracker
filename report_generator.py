@@ -155,7 +155,7 @@ def format_case(case: CaseExtraction, show_disposition: bool = False) -> str:
 
         #### Case Name (linked to full decision)
         **Citation** | Date | **Disposition: Allowed** (only if show_disposition=True)
-        **Judge:** Name | **Applicant's Counsel:** Name | **Respondent's Counsel:** Name
+        **Judge:** Name | **Migrant's Counsel:** Name | **Respondent's Counsel:** Name
         **Nationality:** Country | **Persecution type:** Type
 
         **Facts:** Summary of the case...
@@ -194,7 +194,7 @@ def format_case(case: CaseExtraction, show_disposition: bool = False) -> str:
     # ── Judge and counsel ────────────────────────────────────────────────
     # We build this as a list of parts, then join with " | " (pipe separator).
     counsel_parts = [f"**Judge:** {case.judge}"]
-    counsel_parts.append(f"**Applicant's Counsel:** {case.lawyer_applicant}")
+    counsel_parts.append(f"**Migrant's Counsel:** {case.lawyer_migrant}")
     counsel_parts.append(f"**Respondent's Counsel:** {case.lawyer_respondent}")
     lines.append(" | ".join(counsel_parts))
 

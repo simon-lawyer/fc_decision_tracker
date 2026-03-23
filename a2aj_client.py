@@ -4,22 +4,23 @@ A2AJ REST API client for searching and fetching Federal Court cases.
 Uses the public API at https://api.a2aj.ca (no authentication required).
 
 HOW THIS MODULE WORKS:
-  1. search_fc_cases()  — Searches for all FC "judicial review" cases in a date range.
-                          This is a broad search that returns ALL JR cases, not just
-                          immigration ones.
+  1. search_fc_cases()  — Searches for ALL FC cases in a date range (no query filter).
+                          Returns cases in both English and French, preferring English
+                          metadata but falling back to French for French-only decisions.
   2. filter_imm_cases() — Takes the broad search results and filters down to only
                           immigration cases by checking for an "IMM-xxxx" docket number
                           in the first 500 characters of each case. Only IMM-docket cases
                           are included — T-docket cases (citizenship, mandamus, etc.) are
                           excluded even if they are immigration-related.
   3. fetch_case_text()  — Downloads the full text of a single case by its citation.
-                          Used both for the IMM filtering (partial fetch) and for
-                          getting the complete text to send to Claude (full fetch).
+                          Tries English first, falls back to French. Used both for the
+                          IMM filtering (partial fetch) and for getting the complete text
+                          to send to Claude (full fetch).
 
 WHAT IS A REST API?
   A REST API is a web service you can call by making HTTP requests to URLs.
   In this case, we make GET requests (like opening a URL in your browser) to
-  endpoints like https://api.a2aj.ca/search?query=... and get back JSON data.
+  endpoints like https://api.a2aj.ca/search?dataset=FC&... and get back JSON data.
 
 WHAT IS httpx?
   httpx is a Python library for making HTTP requests. It's similar to the
@@ -69,11 +70,11 @@ REQUEST_TIMEOUT = 30.0
 
 def search_fc_cases(start_date: str, end_date: str) -> list[CaseSearchResult]:
     """
-    Search the A2AJ API for all Federal Court judicial review cases in a date range.
+    Search the A2AJ API for ALL Federal Court cases in a date range.
 
-    This performs a BROAD search — it finds ALL FC cases mentioning "judicial review",
-    not just immigration ones. The filtering to IMM cases happens later in
-    filter_imm_cases().
+    This performs a broad search with no query filter — it finds every FC case
+    decided in the given date range, in both English and French. The filtering
+    to IMM cases happens later in filter_imm_cases().
 
     The search supports pagination: the API returns at most 50 results at a time.
     If there are more than 50, we keep requesting the next page until we've
@@ -99,9 +100,10 @@ def search_fc_cases(start_date: str, end_date: str) -> list[CaseSearchResult]:
     # "while True" creates an infinite loop — we break out of it when done.
     while True:
         # Build the query parameters for the API request.
-        # These get appended to the URL as ?query=...&dataset=...&start_date=... etc.
+        # query="*" is a wildcard — we want ALL cases in the date range, not just
+        # those matching a specific phrase. The IMM filtering happens later.
         params = {
-            "query": '"judicial review"',      # Search for this exact phrase
+            "query": "*",                      # Wildcard — match all cases
             "dataset": A2AJ_DATASET,           # "FC" — Federal Court only
             "start_date": start_date,          # Only cases from this date onward
             "end_date": end_date,              # Only cases up to this date
@@ -112,7 +114,7 @@ def search_fc_cases(start_date: str, end_date: str) -> list[CaseSearchResult]:
 
         # Make the actual HTTP GET request to the A2AJ search endpoint.
         # This is like opening this URL in your browser, but programmatically:
-        #   https://api.a2aj.ca/search?query="judicial review"&dataset=FC&...
+        #   https://api.a2aj.ca/search?dataset=FC&start_date=...&end_date=...
         response = httpx.get(
             f"{A2AJ_BASE_URL}/search",
             params=params,
@@ -137,16 +139,24 @@ def search_fc_cases(start_date: str, end_date: str) -> list[CaseSearchResult]:
             break
 
         # Convert each raw API result (a dictionary) into our CaseSearchResult model.
-        # The API uses field names like "citation_en" and "name_en" (with _en suffix
-        # because the API supports both English and French). We map them to our
-        # simpler field names.
+        # The API returns both English (_en) and French (_fr) fields for each case.
+        # We prefer English but fall back to French for French-only decisions.
         for item in results:
+            citation = item.get("citation_en") or item.get("citation_fr", "")
+            name = item.get("name_en") or item.get("name_fr", "")
+            doc_date = item.get("document_date_en") or item.get("document_date_fr", "")
+            url = item.get("url_en") or item.get("url_fr", "")
+
+            # Skip items with no citation (shouldn't happen, but be safe)
+            if not citation:
+                continue
+
             case = CaseSearchResult(
-                citation=item["citation_en"],           # e.g., "2026 FC 348"
-                name=item["name_en"],                   # e.g., "Famugbode v. Canada (...)"
-                date=item["document_date_en"],          # e.g., "2026-03-13T00:00:00+00:00"
-                url=item["url_en"],                     # Link to full decision
-                snippet=item.get("snippet", ""),        # Short text excerpt (may be empty)
+                citation=citation,
+                name=name,
+                date=doc_date,
+                url=url,
+                snippet=item.get("snippet", ""),
             )
             all_results.append(case)
 
@@ -166,6 +176,9 @@ def fetch_case_text(citation: str, end_char: int = -1) -> str:
     """
     Fetch the full text (or a partial preview) of a case from the A2AJ API.
 
+    Tries English first, then falls back to French if no English text is available.
+    This ensures we can process French-only decisions from the Federal Court.
+
     This is used in two ways:
       1. Partial fetch (end_char=500): To check if a case has an IMM docket number
          in the first 500 characters. This is cheap and fast.
@@ -173,45 +186,52 @@ def fetch_case_text(citation: str, end_char: int = -1) -> str:
          This can be thousands of characters long.
 
     Args:
-        citation: The case citation to fetch, e.g., "2026 FC 348"
+        citation: The case citation to fetch, e.g., "2026 FC 348" or "2026 CF 348"
         end_char:  How many characters to fetch.
                    -1 means "fetch the entire document" (this is the default).
                    500 means "fetch only the first 500 characters".
 
     Returns:
-        The case text as a string. Returns an empty string if the case wasn't found.
+        The case text as a string. Returns an empty string if the case wasn't found
+        in either language.
     """
-    # Build the query parameters for the fetch endpoint.
-    params = {
-        "citation": citation,           # Which case to fetch
-        "doc_type": "cases",            # We want case decisions (not legislation, etc.)
-        "output_language": "en",        # English version
-        "start_char": 0,               # Start from the beginning of the document
-    }
+    # Try English first, then French if English text is empty.
+    for lang, text_field in [("en", "unofficial_text_en"), ("fr", "unofficial_text_fr")]:
+        # Build the query parameters for the fetch endpoint.
+        params = {
+            "citation": citation,           # Which case to fetch
+            "doc_type": "cases",            # We want case decisions (not legislation, etc.)
+            "output_language": lang,        # Try English first, then French
+            "start_char": 0,               # Start from the beginning of the document
+        }
 
-    # Only add end_char if we want a partial fetch.
-    # If end_char is -1 (the default), we omit it and the API returns everything.
-    if end_char > 0:
-        params["end_char"] = end_char
+        # Only add end_char if we want a partial fetch.
+        # If end_char is -1 (the default), we omit it and the API returns everything.
+        if end_char > 0:
+            params["end_char"] = end_char
 
-    # Make the HTTP GET request to the fetch endpoint.
-    response = httpx.get(
-        f"{A2AJ_BASE_URL}/fetch",
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    data = response.json()
+        # Make the HTTP GET request to the fetch endpoint.
+        response = httpx.get(
+            f"{A2AJ_BASE_URL}/fetch",
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
 
-    # The response has a "results" array. For a fetch-by-citation, it should
-    # contain exactly one result (or zero if the citation wasn't found).
-    results = data.get("results", [])
-    if not results:
-        return ""
+        # The response has a "results" array. For a fetch-by-citation, it should
+        # contain exactly one result (or zero if the citation wasn't found).
+        results = data.get("results", [])
+        if not results:
+            continue
 
-    # Extract the case text from the first (and only) result.
-    # "unofficial_text_en" is the field name the API uses for the English text.
-    return results[0].get("unofficial_text_en", "")
+        # Extract the case text from the first (and only) result.
+        text = results[0].get(text_field, "")
+        if text:
+            return text
+
+    # Neither English nor French text was found.
+    return ""
 
 
 def filter_imm_cases(cases: list[CaseSearchResult]) -> list[CaseSearchResult]:

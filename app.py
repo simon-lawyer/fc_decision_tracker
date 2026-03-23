@@ -11,23 +11,18 @@ HOW TO RUN:
 """
 
 # ── Imports ──────────────────────────────────────────────────────────────────
-import csv
 import json
-from pathlib import Path
+import os
 
 from fasthtml.common import *
 from monsterui.all import *
 
-# Import the master CSV path from the central config file so it's defined
-# in one place only. If the path ever changes, we update it in config.py.
-from config import MASTER_CSV_PATH
-
+# Import the database table and config.
+from config import DATA_DIR
+from db import cases as cases_table
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-# Convert the string path from config.py into a Path object, which gives us
-# handy methods like .exists() that we use in load_cases().
-CSV_PATH = Path(MASTER_CSV_PATH)
 PAGE_SIZE = 10
 
 
@@ -113,8 +108,8 @@ CUSTOM_CSS = Style("""
     #back-to-top {
         position: fixed;
         bottom: 2rem;
-        /* Anchor to the right edge of the max-w-3xl column (48rem = 768px) */
-        left: calc(50% + 25rem);
+        /* Anchor to the right edge of the max-w-2xl column (42rem = 672px) */
+        left: calc(50% + 22rem);
         width: 2.5rem;
         height: 2.5rem;
         border-radius: 50%;
@@ -146,59 +141,35 @@ CUSTOM_CSS = Style("""
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
-# Simple cache for the parsed CSV data. Instead of re-reading and re-parsing
-# the CSV on every single HTTP request, we store the result and the file's
-# last-modified time. We only re-read when the file has actually changed.
-# _cache_mtime: the modification time (a float) the last time we read the file.
-# _cache_data:  the parsed list of case dicts from that read.
-_cache_mtime = 0.0
-_cache_data = []
+def _row_to_dict(row) -> dict:
+    """Convert a fastlite dataclass row to a plain dict with parsed JSON fields."""
+    if hasattr(row, '__dict__'):
+        d = {k: v for k, v in row.__dict__.items() if not k.startswith('_')}
+    else:
+        d = dict(row)
+
+    # Parse JSON fields back into Python lists/objects.
+    for field in ("legal_issues", "irpa_sections"):
+        val = d.get(field, "")
+        if val and isinstance(val, str):
+            try:
+                d[field] = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                d[field] = []
+        elif not val:
+            d[field] = []
+
+    return d
 
 
 def load_cases():
-    """Read all cases from the master CSV, sorted newest first.
+    """Read all cases from the database, sorted newest first.
     Parses JSON fields (legal_issues, irpa_sections) back into Python objects.
-
-    Uses a simple cache: the CSV is only re-read if the file's modification
-    time has changed since the last call. This avoids redundant parsing on
-    every HTTP request while still picking up new data after a pipeline run.
     """
-    # 'global' tells Python we want to read AND write the module-level
-    # variables, not create new local ones with the same name.
-    global _cache_mtime, _cache_data
-
-    if not CSV_PATH.exists():
-        return []
-
-    # os.path.getmtime() returns the file's last-modified time as a float
-    # (seconds since epoch). If it matches our cached value, the file hasn't
-    # changed and we can return the cached data immediately.
-    current_mtime = CSV_PATH.stat().st_mtime
-    if current_mtime == _cache_mtime and _cache_data:
-        return _cache_data
-
-    # File has changed (or this is the first call) — re-read and parse it.
-    with open(CSV_PATH, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        cases = []
-        for row in reader:
-            # Parse JSON fields back into lists/objects.
-            for field in ("legal_issues", "irpa_sections"):
-                val = row.get(field, "")
-                if val:
-                    try:
-                        row[field] = json.loads(val)
-                    except (json.JSONDecodeError, TypeError):
-                        row[field] = []
-                else:
-                    row[field] = []
-            cases.append(row)
-
-    # Store the parsed result and the modification time in the cache.
-    _cache_data = sorted(cases, key=lambda row: row.get("date", ""), reverse=True)
-    _cache_mtime = current_mtime
-
-    return _cache_data
+    rows = cases_table()
+    result = [_row_to_dict(row) for row in rows]
+    result.sort(key=lambda c: (c.get("date", ""), c.get("citation", "")), reverse=True)
+    return result
 
 
 def get_unique_values(cases, field):
@@ -225,7 +196,7 @@ def filter_cases(cases, query="", category="", disposition="", judge="",
             or q in c.get("error_statement", "").lower()
             or q in c.get("error_explanation", "").lower()
             or q in c.get("citation", "").lower()
-            or q in c.get("lawyer_applicant", "").lower()
+            or q in c.get("lawyer_migrant", "").lower()
             or q in c.get("lawyer_respondent", "").lower()
         ]
 
@@ -377,11 +348,12 @@ def case_entry(case):
                 cls="mt-2",
             )
 
-    # Outcome — black "Case dismissed." or green "Application granted:" with reasons
+    # Outcome — green for allowed/granted_in_part (with full analysis), black for dismissed
     outcome_block = Div()
     disposition = case.get("disposition", "")
-    if disposition == "allowed":
-        parts = [Span("Application granted: ", cls="font-semibold text-green-700")]
+    if disposition in ("allowed", "granted_in_part"):
+        label = "Granted in part: " if disposition == "granted_in_part" else "Application granted: "
+        parts = [Span(label, cls="font-semibold text-green-700")]
         if case.get("error_statement"):
             parts.append(case["error_statement"])
         outcome_block = P(*parts, cls="text-sm mt-2")
@@ -404,9 +376,9 @@ def case_entry(case):
 
     # Counsel — at the bottom
     counsel_line = Div()
-    if case.get("lawyer_applicant"):
+    if case.get("lawyer_migrant"):
         counsel_line = P(
-            Span("Counsel: ", cls="font-semibold"), case["lawyer_applicant"],
+            Span("Counsel: ", cls="font-semibold"), case["lawyer_migrant"],
             cls="text-xs text-muted-foreground mt-2",
         )
 
@@ -627,12 +599,18 @@ A("Reset", href="/",
 
 # ── App Setup ────────────────────────────────────────────────────────────────
 
+# Detect production environment (Railway sets PORT and RAILWAY_ENVIRONMENT).
+IS_PRODUCTION = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT"))
+
+# Ensure the data directory exists (Railway starts with a clean filesystem).
+os.makedirs(DATA_DIR, exist_ok=True)
+
 app, rt = fast_app(
     hdrs=(
         *Theme.zinc.headers(),   # zinc = neutral/minimal palette
         CUSTOM_CSS,
     ),
-    live=True,   # Auto-reload browser on file save during development
+    live=not IS_PRODUCTION,   # Auto-reload in dev only, not in production
 )
 
 
@@ -674,7 +652,7 @@ def index(category: str = "", disposition: str = "", judge: str = "",
                 }
             });
         """),
-        cls="max-w-3xl mx-auto px-4",
+        cls="max-w-2xl mx-auto px-4",
     )
 
 
@@ -721,7 +699,7 @@ def stats():
         return Container(
             page_header("stats"),
             P("No case data available yet. Run the pipeline to populate.", cls="text-sm text-muted-foreground"),
-            cls="max-w-3xl mx-auto px-4",
+            cls="max-w-2xl mx-auto px-4",
         )
 
     # Helper: build a link to the cases page with filters pre-applied.
@@ -835,8 +813,8 @@ def stats():
     return Container(
         page_header("stats"),
         *sections,
-        cls="max-w-3xl mx-auto px-4",
+        cls="max-w-2xl mx-auto px-4",
     )
 
 
-serve()
+serve(host="0.0.0.0", port=int(os.getenv("PORT", 5001)))

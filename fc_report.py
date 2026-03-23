@@ -6,14 +6,14 @@ This is the main script that ties everything together. It coordinates the
 full pipeline from searching for cases to generating the final report.
 
 THE PIPELINE (what happens when you run this script):
-  1. Search the A2AJ API for all FC judicial review cases in the date range
+  1. Search the A2AJ API for all FC cases in the date range
   2. Filter to only immigration (IMM) cases
-  3. Skip cases we've already processed (deduplication via the master CSV)
+  3. Skip cases we've already processed (deduplication via the SQLite database)
   4. Fetch the full text of each new case
   5. Send each case to Claude for analysis (extract judge, lawyers, category, etc.)
-     — Each case is normalized, reconciled, and saved to CSV IMMEDIATELY after
-       analysis. This means if the pipeline crashes partway through, the cases
-       that already finished are safely saved.
+     — Each case is normalized, reconciled, and saved to the database IMMEDIATELY
+       after analysis. This means if the pipeline crashes partway through, the
+       cases that already finished are safely saved.
   6. Generate a markdown report with ONLY the allowed cases
   7. Write the report to the output/ folder
 
@@ -65,7 +65,7 @@ from config import OUTPUT_DIR, ANTHROPIC_API_KEY, get_previous_week_range
 from a2aj_client import search_fc_cases, fetch_case_text, filter_imm_cases
 from case_analyzer import analyze_cases_concurrent
 from normalizer import normalize_case, reconcile
-from csv_manager import get_processed_citations, save_cases
+from db_manager import get_processed_citations, save_cases
 from report_generator import generate_report
 from models import CaseSearchResult
 
@@ -147,13 +147,13 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
         print("  Or export it:              export ANTHROPIC_API_KEY=sk-ant-...")
         sys.exit(1)
 
-    # ── STEP 1: Search A2AJ for all FC JR cases in the date range ────────
-    # This calls the A2AJ API and finds all Federal Court cases mentioning
-    # "judicial review" in the given week. This is a BROAD search — it includes
-    # immigration, tax, IP, and all other types of JR cases.
-    print(f"Searching A2AJ for FC JR cases ({start_date} to {end_date})...")
+    # ── STEP 1: Search A2AJ for all FC cases in the date range ──────────
+    # This calls the A2AJ API and finds ALL Federal Court cases decided in
+    # the given week (both English and French). The filtering to IMM cases
+    # happens in the next step.
+    print(f"Searching A2AJ for FC cases ({start_date} to {end_date})...")
     all_cases = search_fc_cases(start_date, end_date)
-    print(f"  Found {len(all_cases)} FC judicial review cases.")
+    print(f"  Found {len(all_cases)} FC cases.")
 
     # If the API returned nothing (rare, but possible for holidays), stop here.
     if not all_cases:
@@ -185,7 +185,7 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
         return
 
     # ── STEP 3: Skip cases we've already processed ───────────────────────
-    # Check the master CSV for citations we've already analyzed in a previous
+    # Check the database for citations we've already analyzed in a previous
     # run. This prevents duplicate work (and duplicate Claude API charges)
     # if you run the script twice for the same week.
     processed = get_processed_citations()
@@ -199,9 +199,9 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
         print(f"  Skipping {skipped} already-processed case(s).")
 
     # If ALL cases were already processed, we can still generate a report
-    # from the existing CSV data.
+    # from the existing database data.
     if not new_cases:
-        print("All cases already processed. Generating report from existing data...")
+        print("All cases already processed. Generating report from existing database...")
         _generate_report_from_existing(start_date, end_date, output_path)
         return
 
@@ -238,16 +238,16 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     # This runs up to 3 cases at a time for speed (see MAX_CONCURRENT_ANALYSES).
     #
     # INCREMENTAL SAVING: Instead of waiting for ALL cases to finish before
-    # saving anything, we save each case to CSV as soon as it's done. This way,
+    # saving anything, we save each case to database as soon as it's done. This way,
     # if the pipeline crashes after analyzing 10 of 15 cases, those 10 are
-    # already safely in the CSV. On the next run, they'll be skipped as
+    # already safely in the database. On the next run, they'll be skipped as
     # duplicates and the pipeline picks up where it left off.
     week_processed = start_date   # Use the Monday date as the "week processed" marker
     print(f"Analyzing {len(cases_with_text)} case(s) with Claude...")
 
-    # We need the existing CSV rows for reconciliation (typo detection).
-    # Load them once here so we don't re-read the CSV for every single case.
-    from csv_manager import load_master
+    # We need existing database rows for reconciliation (typo detection).
+    # Load them once here so we don't re-query the database for every single case.
+    from db_manager import load_master
     existing_rows = load_master()
 
     # This list collects all successful extractions so we can still print
@@ -266,8 +266,8 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
 
         This function:
           1. Normalizes the extracted data (clean up names, etc.)
-          2. Reconciles against existing CSV data (flags typos)
-          3. Saves the case to CSV immediately
+          2. Reconciles against existing database data (flags typos)
+          3. Saves the case to database immediately
           4. Adds it to our running list of results
         """
         # ── Normalize ────────────────────────────────────────────────
@@ -277,18 +277,18 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
         normalized = normalize_case(extraction)
 
         # ── Reconcile ────────────────────────────────────────────────
-        # Compare new values against what's already in the master CSV.
+        # Compare new values against what's already in the database.
         # Flags potential typos or inconsistencies (e.g., "Browuer" vs "Brouwer").
         # This is a human-review step — it prints warnings but doesn't block.
         # We pass a single-item list because reconcile() expects a list.
         reconcile([normalized], existing_rows)
 
-        # ── Save to CSV immediately ──────────────────────────────────
+        # ── Save to database immediately ──────────────────────────────────
         # save_cases() handles deduplication internally, so it's safe to
         # call it after each case — if the same citation is already in
-        # the CSV, it will be skipped automatically.
+        # the database, it will be skipped automatically.
         save_cases([normalized])
-        print(f"  Saved {normalized.citation} to CSV.")
+        print(f"  Saved {normalized.citation} to database.")
 
         # ── Track in our running list ────────────────────────────────
         # We still collect all results so we can print a summary and
@@ -298,7 +298,7 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     # asyncio.run() is the bridge between regular Python code and async code.
     # It starts the async event loop, runs our concurrent analysis, and returns
     # the results when everything is done.
-    # The on_case_done callback saves each case to CSV as soon as it finishes.
+    # The on_case_done callback saves each case to database as soon as it finishes.
     asyncio.run(
         analyze_cases_concurrent(cases_with_text, week_processed, on_case_done)
     )
@@ -318,47 +318,37 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     # Generate the report from ALL cases for this week (not just the new batch).
     # This is important for re-runs: if the first run processed 12 cases and
     # the second run picks up 3 more, the report should include all 15.
-    # We pull from the master CSV to get the complete picture.
+    # We pull from the database to get the complete picture.
     _generate_report_from_existing(start_date, end_date, output_path)
 
 
 def _generate_report_from_existing(start_date: str, end_date: str, output_path: str) -> None:
     """
-    Generate a report using data already in the master CSV.
+    Generate a report using data already in the database.
 
     This is called when all cases for the week have already been processed
     in a previous run. Instead of re-analyzing everything, we just read the
-    CSV and build the report from it.
-
-    The leading underscore in the function name (_generate_...) is a Python
-    convention meaning "this is a private/internal function" — it's only
-    meant to be called from within this file, not from other modules.
+    database and build the report from it.
 
     Args:
         start_date:  Start of the week (YYYY-MM-DD)
         end_date:    End of the week (YYYY-MM-DD)
         output_path: Where to write the report file.
     """
-    # These imports are here (instead of at the top of the file) to avoid
-    # circular import issues. It's fine to import inside a function.
     import json
-    from csv_manager import load_master, JSON_FIELDS
+    from db_manager import load_master, JSON_FIELDS
     from models import CaseExtraction
 
-    # Load all rows from the master CSV.
+    # Load all rows from the database.
     rows = load_master()
 
     # Filter to only cases whose date falls within our week's range.
-    # The string comparison (<=) works for dates in YYYY-MM-DD format because
-    # the strings sort in chronological order (e.g., "2026-03-09" < "2026-03-15").
     week_cases = []
     for row in rows:
         if not (start_date <= row.get("date", "") <= end_date):
             continue
 
-        # Deserialize JSON fields (irpa_sections, legal_issues) from strings
-        # back into Python lists/objects. In the CSV they're stored as JSON
-        # strings like '[{"primary": "reasonableness", ...}]'.
+        # Deserialize JSON fields from strings back into Python lists/objects.
         for field in JSON_FIELDS:
             if field in row and isinstance(row[field], str) and row[field]:
                 try:
@@ -370,12 +360,10 @@ def _generate_report_from_existing(start_date: str, end_date: str, output_path: 
 
         week_cases.append(CaseExtraction(**row))
 
-    # Split into allowed and all for the report generator.
-    # Most categories only show allowed cases, but some (like Stay) show all.
     allowed = [c for c in week_cases if c.disposition in ("allowed", "granted_in_part")]
 
     _write_report(allowed, week_cases, start_date, end_date, output_path)
-    print(f"  Total cases for this week in CSV: {len(week_cases)}")
+    print(f"  Total cases for this week in database: {len(week_cases)}")
 
 
 def _write_report(

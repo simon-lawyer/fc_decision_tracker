@@ -55,7 +55,7 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 #
 # IMPORTANT: If you need to change what information is extracted (e.g., add a
 # new field), you need to update BOTH this prompt AND the CaseExtraction model
-# in models.py, AND the CSV_COLUMNS in csv_manager.py.
+# in models.py, AND the Case dataclass in db.py.
 EXTRACTION_PROMPT = """You are a legal analyst extracting structured information from a Federal Court of Canada immigration judicial review decision.
 
 IMPORTANT — PRIVACY: Do NOT include any personal names (of applicants, family members, or other individuals) in the facts_summary, error_statement, or error_explanation fields. Refer to individuals by their role only (e.g., "the applicant", "her spouse", "the principal applicant's son"). Do not reproduce personal information such as addresses, phone numbers, immigration file numbers, or other identifying details. Focus only on legally relevant information. Lawyer names and judge names are fine — they are public officers of the court.
@@ -65,7 +65,7 @@ IMPORTANT — LEGISLATIVE REFERENCES: When citing sections of IRPA or IRPR, incl
 Analyze the case text below and extract the following fields as JSON:
 
 1. **judge**: The judge's SURNAME ONLY (e.g., "Southcott", "Aylen", "Brouwer"). Strip all honorifics, titles, and first names. Just the last name.
-2. **lawyer_applicant**: The MIGRANT'S lawyer/counsel. In most cases the migrant is the applicant, but sometimes the Minister is the applicant (e.g., Minister's application to vacate refugee status). Always identify the lawyer representing the non-citizen / migrant / refugee / person subject to the immigration decision. Use "First Last" format (e.g., "Vakkas Bilsin"). If self-represented, return "Self-represented".
+2. **lawyer_migrant**: The MIGRANT'S lawyer/counsel. In most cases the migrant is the applicant, but sometimes the Minister is the applicant (e.g., Minister's application to vacate refugee status). Always identify the lawyer representing the non-citizen / migrant / refugee / person subject to the immigration decision. Use "First Last" format (e.g., "Vakkas Bilsin"). If self-represented, return "Self-represented".
 3. **lawyer_respondent**: The OTHER side's lawyer/counsel (usually the Crown / Minister's counsel, but the migrant's counsel if the Minister is the applicant). Same format as above.
 4. **category**: Classify the case into exactly one of these categories:
    - "RAD" — judicial review of a Refugee Appeal Division decision
@@ -201,7 +201,7 @@ def extract_case_info(case_text: str, case_meta: CaseSearchResult, week_processe
         date=case_date,
         url=case_meta.url,
         judge=extracted.get("judge", "Unknown"),
-        lawyer_applicant=extracted.get("lawyer_applicant", "Unknown"),
+        lawyer_migrant=extracted.get("lawyer_migrant", "Unknown"),
         lawyer_respondent=extracted.get("lawyer_respondent", "Unknown"),
         category=extracted.get("category", "Other"),
         disposition=extracted.get("disposition", "unknown"),
