@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+data/
+output/
+.claude/
+.DS_Store
+.sesskey
