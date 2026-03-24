@@ -56,17 +56,16 @@ import os
 import sys
 
 # date: Represents calendar dates like 2026-03-20.
-from datetime import date
+from datetime import date, timedelta
 
 # ── Project imports ──────────────────────────────────────────────────────────
 # These import from the other .py files in this project.
 
-from config import OUTPUT_DIR, ANTHROPIC_API_KEY, get_previous_week_range
+from config import ANTHROPIC_API_KEY
 from a2aj_client import search_fc_cases, fetch_case_text, filter_imm_cases
 from case_analyzer import analyze_cases_concurrent
 from normalizer import normalize_case, reconcile
 from db_manager import get_processed_citations, save_cases
-from report_generator import generate_report
 from models import CaseSearchResult
 
 
@@ -103,12 +102,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="End date (YYYY-MM-DD). Default: previous Sunday.",
     )
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Output file path. Default: output/report_YYYY-MM-DD.md",
-    )
-
     # action="store_true" means this is a flag (no value needed).
     # If --dry-run is present, args.dry_run = True. Otherwise, False.
     parser.add_argument(
@@ -122,18 +115,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool) -> None:
+def run_pipeline(start_date: str, end_date: str, dry_run: bool) -> None:
     """
-    Run the full report generation pipeline.
-
-    This is the heart of the script — it coordinates all the steps from
-    searching for cases to writing the final report.
+    Run the case ingestion pipeline: search, filter, analyze, save to database.
 
     Args:
         start_date:  Start of the date range (YYYY-MM-DD), e.g., "2026-03-09"
         end_date:    End of the date range (YYYY-MM-DD), e.g., "2026-03-15"
-        output_path: Where to write the markdown report file.
-        dry_run:     If True, only search and list cases — don't analyze or report.
+        dry_run:     If True, only search and list cases — don't analyze.
     """
 
     # ── FAIL-FAST: Check for the Anthropic API key ────────────────────────
@@ -198,11 +187,8 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     if skipped:
         print(f"  Skipping {skipped} already-processed case(s).")
 
-    # If ALL cases were already processed, we can still generate a report
-    # from the existing database data.
     if not new_cases:
-        print("All cases already processed. Generating report from existing database...")
-        _generate_report_from_existing(start_date, end_date, output_path)
+        print("All cases already processed.")
         return
 
     # ── STEP 4: Fetch the full text of each new case ─────────────────────
@@ -304,8 +290,7 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     )
     print(f"  Successfully extracted data from {len(extractions)} case(s).")
 
-    # ── STEP 6: Generate the markdown report ────────────────────────────
-    # Print a disposition breakdown of the NEW cases we just analyzed.
+    # ── Done — print disposition breakdown ──────────────────────────────
     allowed_new = [c for c in extractions if c.disposition in ("allowed", "granted_in_part")]
     dismissed_new = [c for c in extractions if c.disposition == "dismissed"]
     print(f"\n  Disposition breakdown (new cases):")
@@ -315,128 +300,24 @@ def run_pipeline(start_date: str, end_date: str, output_path: str, dry_run: bool
     if other_disp:
         print(f"    Other:            {other_disp}")
 
-    # Generate the report from ALL cases for this week (not just the new batch).
-    # This is important for re-runs: if the first run processed 12 cases and
-    # the second run picks up 3 more, the report should include all 15.
-    # We pull from the database to get the complete picture.
-    _generate_report_from_existing(start_date, end_date, output_path)
-
-
-def _generate_report_from_existing(start_date: str, end_date: str, output_path: str) -> None:
-    """
-    Generate a report using data already in the database.
-
-    This is called when all cases for the week have already been processed
-    in a previous run. Instead of re-analyzing everything, we just read the
-    database and build the report from it.
-
-    Args:
-        start_date:  Start of the week (YYYY-MM-DD)
-        end_date:    End of the week (YYYY-MM-DD)
-        output_path: Where to write the report file.
-    """
-    import json
-    from db_manager import load_master, JSON_FIELDS
-    from models import CaseExtraction
-
-    # Load all rows from the database.
-    rows = load_master()
-
-    # Filter to only cases whose date falls within our week's range.
-    week_cases = []
-    for row in rows:
-        if not (start_date <= row.get("date", "") <= end_date):
-            continue
-
-        # Deserialize JSON fields from strings back into Python lists/objects.
-        for field in JSON_FIELDS:
-            if field in row and isinstance(row[field], str) and row[field]:
-                try:
-                    row[field] = json.loads(row[field])
-                except json.JSONDecodeError:
-                    row[field] = []
-            elif field in row:
-                row[field] = []
-
-        week_cases.append(CaseExtraction(**row))
-
-    allowed = [c for c in week_cases if c.disposition in ("allowed", "granted_in_part")]
-
-    _write_report(allowed, week_cases, start_date, end_date, output_path)
-    print(f"  Total cases for this week in database: {len(week_cases)}")
-
-
-def _write_report(
-    allowed_cases: list,
-    all_cases: list,
-    start_date: str,
-    end_date: str,
-    output_path: str,
-) -> None:
-    """
-    Generate the markdown report string and write it to a file.
-
-    Args:
-        allowed_cases: List of CaseExtraction objects for allowed cases only.
-        all_cases:     List of ALL CaseExtraction objects (allowed + dismissed).
-                       Used for categories that show all dispositions (like Stay).
-        start_date:    Start of the week (YYYY-MM-DD)
-        end_date:      End of the week (YYYY-MM-DD)
-        output_path:   File path to write the report to.
-    """
-    # Call the report generator to build the markdown string.
-    # Both lists are passed so the generator can decide what to show per category.
-    report = generate_report(allowed_cases, all_cases, start_date, end_date)
-
-    # Ensure the output directory exists.
-    # os.path.dirname() extracts the directory from the full file path.
-    # For example: "/path/to/output/report.md" → "/path/to/output"
-    # The "or '.'" handles the edge case where the path has no directory part.
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-    # Write the report to the file.
-    # "w" means write mode — it creates the file or overwrites it if it exists.
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    print(f"\nReport written to: {output_path}")
-    print(f"  {len(allowed_cases)} allowed case(s) included in report.")
-
 
 def main() -> None:
     """
     Entry point: parse command-line arguments, set defaults, and run the pipeline.
-
-    WHAT IS AN ENTRY POINT?
-      When you run "python fc_report.py", Python starts executing code from the
-      top of the file. The "if __name__ == '__main__'" block at the bottom calls
-      this function, which kicks everything off.
     """
-    # Parse command-line arguments (--start-date, --end-date, --output, --dry-run).
     args = parse_args()
 
-    # ── Determine date range ─────────────────────────────────────────────
-    # If the user specified dates, use those. Otherwise, default to last week.
+    # If the user specified dates, use those. Otherwise, default to the last
+    # 14 days — wide enough to catch any cases that appear with a lag on A2AJ.
     if args.start_date and args.end_date:
         start_date = args.start_date
         end_date = args.end_date
     else:
-        # get_previous_week_range() returns Python date objects.
-        # .isoformat() converts them to "YYYY-MM-DD" strings.
-        start, end = get_previous_week_range()
-        start_date = start.isoformat()
-        end_date = end.isoformat()
+        today = date.today()
+        start_date = (today - timedelta(days=14)).isoformat()
+        end_date = today.isoformat()
 
-    # ── Determine output path ────────────────────────────────────────────
-    # If the user specified an output path, use it. Otherwise, generate one
-    # based on the start date, like "output/report_2026-03-09.md".
-    if args.output:
-        output_path = args.output
-    else:
-        output_path = os.path.join(OUTPUT_DIR, f"report_{start_date}.md")
-
-    # ── Run the pipeline ─────────────────────────────────────────────────
-    run_pipeline(start_date, end_date, output_path, args.dry_run)
+    run_pipeline(start_date, end_date, args.dry_run)
 
 
 # ── Script entry point ───────────────────────────────────────────────────────

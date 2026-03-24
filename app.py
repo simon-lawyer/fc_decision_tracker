@@ -108,7 +108,7 @@ CUSTOM_CSS = Style("""
     #back-to-top {
         position: fixed;
         bottom: 2rem;
-        /* Anchor to the right edge of the max-w-2xl column (42rem = 672px) */
+        /* Anchor to the right edge of the content column */
         left: calc(50% + 22rem);
         width: 2.5rem;
         height: 2.5rem;
@@ -135,6 +135,73 @@ CUSTOM_CSS = Style("""
             left: auto;
             right: 1rem;
         }
+    }
+
+    /* Floating search/filter button — anchored near the content column */
+    #filter-fab {
+        position: fixed;
+        top: 24rem;
+        /* Sit just outside the max-w-2xl column (42rem = 672px) */
+        left: calc(50% + 22rem);
+        width: 3.5rem;
+        height: 3.5rem;
+        padding: 0;
+        font-size: 0.55rem;
+        line-height: 1.3;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        text-align: center;
+        background: hsl(var(--foreground));
+        color: hsl(var(--background));
+        border: none;
+        border-radius: 50%;
+        cursor: pointer;
+        z-index: 40;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    #filter-fab:hover { opacity: 0.85; }
+    @media (max-width: 960px) {
+        #filter-fab {
+            left: auto;
+            right: 1rem;
+        }
+    }
+
+    /* Slide-in panel overlay */
+    #filter-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.2);
+        z-index: 45;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+    }
+    #filter-overlay.open {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    /* Slide-in panel */
+    #filter-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 18rem;
+        background: hsl(var(--background));
+        z-index: 50;
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+        padding: 1.5rem;
+        overflow-y: auto;
+        box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+    }
+    #filter-panel.open {
+        transform: translateX(0);
     }
 """)
 
@@ -191,13 +258,13 @@ def filter_cases(cases, query="", category="", disposition="", judge="",
         q = query.lower()
         results = [
             c for c in results
-            if q in c.get("case_name", "").lower()
-            or q in c.get("facts_summary", "").lower()
-            or q in c.get("error_statement", "").lower()
-            or q in c.get("error_explanation", "").lower()
-            or q in c.get("citation", "").lower()
-            or q in c.get("lawyer_migrant", "").lower()
-            or q in c.get("lawyer_respondent", "").lower()
+            if q in (c.get("case_name") or "").lower()
+            or q in (c.get("facts_summary") or "").lower()
+            or q in (c.get("error_statement") or "").lower()
+            or q in (c.get("error_explanation") or "").lower()
+            or q in (c.get("citation") or "").lower()
+            or q in (c.get("lawyer_migrant") or "").lower()
+            or q in (c.get("lawyer_respondent") or "").lower()
         ]
 
     if category:
@@ -220,26 +287,13 @@ def filter_cases(cases, query="", category="", disposition="", judge="",
 
 def clickable_filter(label, value, field):
     """
-    A clickable metadata item that filters the case list when clicked.
-    Sets the corresponding dropdown in the filter form, then triggers a search.
-
-    Args:
-        label: Display prefix like "Judge:" or "Category:"
-        value: The value to filter by (e.g. "Blackhawk", "RAD")
-        field: The form field name to set (e.g. "judge", "category")
+    A clickable metadata item that links to the case list filtered by this value.
+    E.g. clicking "Justice: Southcott" navigates to /?judge=Southcott.
     """
-    # Use json.dumps() to safely escape the value for embedding in JavaScript.
-    # json.dumps() handles quotes, backslashes, newlines, and special characters —
-    # much safer than just replacing single quotes. It wraps the string in double
-    # quotes, so we use those directly in the JS code instead of single quotes.
-    safe_value = json.dumps(value)
-    # json.dumps() also safely escapes the field name for the CSS selector string.
-    safe_field = json.dumps(field)
     return A(
         Span(f"{label} ", cls="font-semibold"), value,
+        href=f"/?{field}={value}",
         cls="hover:underline cursor-pointer",
-        # On click: set the dropdown value, then submit the filter form.
-        onclick=f"event.preventDefault(); document.querySelector('select[name=' + {safe_field} + ']').value = {safe_value}; document.getElementById('filter-drawer').classList.add('open'); document.getElementById('filter-toggle').classList.add('active'); htmx.trigger(document.getElementById('filter-form'), 'submit');",
     )
 
 
@@ -250,17 +304,14 @@ def disposition_label(disposition):
     """
     colors = {
         "allowed": "text-green-600",
-        "dismissed": "text-muted-foreground",
+        "dismissed": "text-red-300",
         "granted_in_part": "text-amber-600",
     }
     display = disposition.replace("_", " ")
-    # Use json.dumps() to safely escape the disposition value for JavaScript.
-    # This prevents XSS if a disposition value ever contains special characters.
-    safe_disposition = json.dumps(disposition)
     return A(
         display,
+        href=f"/?disposition={disposition}",
         cls=f"text-xs tracking-wide uppercase hover:underline cursor-pointer {colors.get(disposition, 'text-muted-foreground')}",
-        onclick=f"event.preventDefault(); document.querySelector('select[name=disposition]').value = {safe_disposition}; document.getElementById('filter-drawer').classList.add('open'); document.getElementById('filter-toggle').classList.add('active'); htmx.trigger(document.getElementById('filter-form'), 'submit');",
     )
 
 
@@ -296,7 +347,7 @@ def case_entry(case):
     # Metadata line: clickable judge, category, nationality, persecution
     meta_parts = []
     if case.get("judge"):
-        meta_parts.append(clickable_filter("Judge:", case["judge"], "judge"))
+        meta_parts.append(clickable_filter("Justice:", case["judge"], "judge"))
     if case.get("category"):
         meta_parts.append(clickable_filter("Category:", case["category"], "category"))
     if case.get("nationality"):
@@ -430,6 +481,46 @@ def case_list_fragment(cases, page=0):
         return tuple(cards)
 
 
+def _header_description():
+    """Build the greyed-out description paragraphs with live stats."""
+    from datetime import date, timedelta
+
+    all_cases = load_cases()
+
+    # Last updated: most recent week_processed value in the database
+    last_updated = ""
+    if all_cases:
+        last_updated = max(c.get("date", "") for c in all_cases if c.get("date"))
+
+    # Rolling 30-day stats
+    cutoff = (date.today() - timedelta(days=30)).isoformat()
+    recent_cases = [c for c in all_cases if c.get("date", "") >= cutoff]
+    total = len(recent_cases)
+    allowed = sum(1 for c in recent_cases if c.get("disposition") in ("allowed", "granted_in_part"))
+    grant_rate = (allowed / total * 100) if total > 0 else 0
+
+    parts = [
+        P("Federal Court immigration judicial review decisions, extracted and summarized by Claude. "
+          "Case text is sourced from A2AJ. Verify all details against the original decisions before relying on this analysis.",
+          cls="text-xs text-muted-foreground mt-2 leading-relaxed"),
+    ]
+
+    if total:
+        parts.append(
+            P(f"In the last 30 days, the Federal Court has released {total} IMM judicial review decisions. "
+              f"Of these, {allowed} were granted, for an overall grant rate of {grant_rate:.1f}%.",
+              cls="text-xs text-muted-foreground mt-1 leading-relaxed"),
+        )
+
+    if last_updated:
+        parts.append(
+            P(f"Last updated with decisions through {last_updated}.",
+              cls="text-xs text-muted-foreground mt-1"),
+        )
+
+    return Div(*parts)
+
+
 def page_header(active="cases"):
     """
     Shared page header with nav links between Cases and Stats pages.
@@ -439,8 +530,21 @@ def page_header(active="cases"):
     stats_nav = Span("Stats", cls="font-semibold underline") if active == "stats" else A("Stats", href="/stats", cls="hover:underline")
 
     return Div(
-        H1("Professor Wallace's AI Analysis of FC IMM Cases", cls="text-lg font-semibold tracking-tight"),
-        Div(cases_nav, Span(" · ", cls="text-muted-foreground"), stats_nav, cls="text-sm mt-2"),
+        H1(A("Professor Wallace's AI Analysis of FC IMM Cases", href="/", cls="no-underline hover:underline"), cls="text-lg font-semibold tracking-tight"),
+        _header_description(),
+        Div(
+            A(Img(src="https://upload.wikimedia.org/wikipedia/commons/8/83/Lincoln_Alexander_School_of_Law_Logo.svg",
+                  alt="Lincoln Alexander School of Law",
+                  cls="h-24"),
+              href="https://www.torontomu.ca/law/", target="_blank"),
+            A(Img(src="https://a2aj.ca/assets/a2aj colour black logo@300x.png",
+                  alt="A2AJ",
+                  cls="h-24"),
+              href="https://a2aj.ca/", target="_blank"),
+            cls="flex items-center justify-center gap-6 mt-4",
+        ),
+        Div(cases_nav, Span(" · ", cls="text-muted-foreground"), stats_nav, cls="text-sm mt-2 text-center"),
+        Hr(cls="mt-4 border-muted-foreground/20"),
         cls="pt-8 pb-6",
     )
 
@@ -472,7 +576,7 @@ def compute_stats(cases):
         if judge not in judge_stats:
             judge_stats[judge] = {"total": 0, "allowed": 0}
         judge_stats[judge]["total"] += 1
-        if c.get("disposition") == "allowed":
+        if c.get("disposition") in ("allowed", "granted_in_part"):
             judge_stats[judge]["allowed"] += 1
 
     # Nationality breakdown
@@ -487,8 +591,8 @@ def compute_stats(cases):
     date_min = min(dates) if dates else ""
     date_max = max(dates) if dates else ""
 
-    # Allow rate
-    grant_rate = (allowed / total * 100) if total > 0 else 0
+    # Grant rate — includes both allowed and granted_in_part
+    grant_rate = ((allowed + granted_in_part) / total * 100) if total > 0 else 0
 
     return {
         "total": total,
@@ -515,28 +619,137 @@ def results_count(count, oob=False):
     return Span(f"{count} {label}", **attrs)
 
 
-def filter_bar(cases, category="", disposition="", judge="", nationality="", query=""):
+# ── Layout toggle ────────────────────────────────────────────────────────────
+# Layout options: "slide" (floating button + slide-in panel),
+#                  "sidebar" (always-visible left sidebar),
+#                  "inline" (original single-column with collapsible drawer)
+LAYOUT = "slide"
+
+
+def _make_select(name, options, placeholder, selected_value=""):
+    """Shared select builder used by both layouts."""
+    return Select(
+        Option(placeholder, value="", selected=(not selected_value)),
+        *[Option(opt, value=opt, selected=(opt == selected_value)) for opt in options],
+        name=name,
+        cls="text-xs filter-select",
+    )
+
+
+def filter_slide_panel(cases, category="", disposition="", judge="", nationality="", query=""):
     """
-    Search and filter controls.
-    The form uses hx-get on submit — one HTMX request sends all field values.
-    Clickable metadata in case entries sets a dropdown then submits the form.
-    Accepts initial values to pre-populate when arriving from the stats page.
+    Slide-in panel layout: a floating button on the right edge opens a panel
+    that glides in from the right with search and filters.
     """
     categories = get_unique_values(cases, "category")
     dispositions = get_unique_values(cases, "disposition")
     judges = get_unique_values(cases, "judge")
     nationalities = get_unique_values(cases, "nationality")
 
-    def make_select(name, options, placeholder, selected_value=""):
-        # Use a plain <select> without the uk-select class to prevent
-        # FrankenUI from converting it into a custom web component
-        # (which injects unwanted horizontal rules/separators).
-        return Select(
-            Option(placeholder, value="", selected=(not selected_value)),
-            *[Option(opt, value=opt, selected=(opt == selected_value)) for opt in options],
-            name=name,
-            cls="text-xs filter-select",
-        )
+    toggle_js = "document.getElementById('filter-panel').classList.toggle('open'); document.getElementById('filter-overlay').classList.toggle('open');"
+    close_js = "document.getElementById('filter-panel').classList.remove('open'); document.getElementById('filter-overlay').classList.remove('open');"
+
+    return (
+        # Floating button on right edge
+        Button(Div("Search", Br(), "+", Br(), "Filter"), id="filter-fab", onclick=toggle_js),
+
+        # Overlay — click to close
+        Div(id="filter-overlay",
+            onclick=close_js),
+
+        # Slide-in panel — always starts closed; filters applied via URL don't need it open
+        Div(
+            Div(
+                H3("Search & Filter", cls="text-sm font-semibold"),
+                Button("X", onclick=close_js,
+                       cls="text-xs px-2 py-1 bg-muted text-foreground hover:opacity-80"),
+                cls="flex items-center justify-between mb-4",
+            ),
+            Form(
+                Div(
+                    Input(
+                        name="query",
+                        type="search",
+                        placeholder="Search...",
+                        value=query,
+                        cls="uk-input text-sm flex-1",
+                    ),
+                    Button("Search", type="submit",
+                           cls="text-xs px-3 py-1.5 bg-foreground text-background hover:opacity-80 whitespace-nowrap"),
+                    cls="flex items-center gap-2",
+                ),
+                _make_select("category", categories, "Category", category),
+                _make_select("disposition", dispositions, "Disposition", disposition),
+                _make_select("judge", judges, "Justice", judge),
+                _make_select("nationality", nationalities, "Nationality", nationality),
+                Div(
+                    Button("Filter", type="submit",
+                           cls="text-xs px-3 py-1.5 bg-foreground text-background hover:opacity-80"),
+                    A("Reset", href="/",
+                      cls="text-xs px-3 py-1.5 bg-muted text-foreground hover:opacity-80"),
+                    cls="flex items-center gap-2",
+                ),
+                results_count(len(cases)),
+                id="filter-form",
+                hx_get="/cases",
+                hx_target="#case-list",
+                hx_trigger="submit",
+                hx_swap="innerHTML",
+                hx_on__after_request=close_js,
+                cls="flex flex-col gap-3",
+            ),
+            id="filter-panel",
+        ),
+    )
+
+
+def filter_sidebar(cases, category="", disposition="", judge="", nationality="", query=""):
+    """
+    Sidebar layout: filters always visible in a fixed left column.
+    Hidden on mobile behind a toggle.
+    """
+    categories = get_unique_values(cases, "category")
+    dispositions = get_unique_values(cases, "disposition")
+    judges = get_unique_values(cases, "judge")
+    nationalities = get_unique_values(cases, "nationality")
+
+    return Form(
+        Input(
+            name="query",
+            type="search",
+            placeholder="Search...",
+            value=query,
+            cls="uk-input text-sm w-full mb-3",
+        ),
+        _make_select("category", categories, "Category", category),
+        _make_select("disposition", dispositions, "Disposition", disposition),
+        _make_select("judge", judges, "Justice", judge),
+        _make_select("nationality", nationalities, "Nationality", nationality),
+        Div(
+            Button("Apply", type="submit",
+                   cls="text-xs px-3 py-1.5 bg-foreground text-background hover:opacity-80"),
+            A("Reset", href="/",
+              cls="text-xs px-3 py-1.5 bg-muted text-foreground hover:opacity-80 inline-block"),
+            cls="flex gap-2 mt-4",
+        ),
+        results_count(len(cases)),
+        id="filter-form",
+        hx_get="/cases",
+        hx_target="#case-list",
+        hx_trigger="submit",
+        hx_swap="innerHTML",
+        cls="flex flex-col gap-3 mt-2",
+    )
+
+
+def filter_bar(cases, category="", disposition="", judge="", nationality="", query=""):
+    """
+    Original single-column layout: collapsible filter drawer above the case list.
+    """
+    categories = get_unique_values(cases, "category")
+    dispositions = get_unique_values(cases, "disposition")
+    judges = get_unique_values(cases, "judge")
+    nationalities = get_unique_values(cases, "nationality")
 
     return Form(
         # Search row: input + Search button
@@ -568,24 +781,21 @@ def filter_bar(cases, category="", disposition="", judge="", nationality="", que
 
         # Collapsible filter drawer — hidden by default, slides open
         Div(
-            # Dropdowns — vertical stack
             Div(
-                make_select("category", categories, "Category", category),
-                make_select("disposition", dispositions, "Disposition", disposition),
-                make_select("judge", judges, "Judge", judge),
-                make_select("nationality", nationalities, "Nationality", nationality),
+                _make_select("category", categories, "Category", category),
+                _make_select("disposition", dispositions, "Disposition", disposition),
+                _make_select("judge", judges, "Justice", judge),
+                _make_select("nationality", nationalities, "Nationality", nationality),
                 cls="flex flex-col gap-3",
             ),
-            # Apply + Reset buttons below the dropdowns
             Div(
                 Button("Apply", type="submit",
                        cls="text-sm px-4 py-2 bg-foreground text-background hover:opacity-80"),
-A("Reset", href="/",
-  cls="text-sm px-4 py-2 bg-muted text-foreground hover:opacity-80 inline-block"),
+                A("Reset", href="/",
+                  cls="text-sm px-4 py-2 bg-muted text-foreground hover:opacity-80 inline-block"),
                 cls="flex gap-3 mt-3",
             ),
             id="filter-drawer",
-            # Auto-open the drawer if any filters are pre-applied (e.g. from stats page)
             cls="filter-drawer mb-4" + (" open" if any([category, disposition, judge, nationality]) else ""),
         ),
 
@@ -609,7 +819,11 @@ app, rt = fast_app(
     hdrs=(
         *Theme.zinc.headers(),   # zinc = neutral/minimal palette
         CUSTOM_CSS,
+        # Scales of justice emoji as favicon (no external file needed)
+        Link(rel="icon", href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x2696;</text></svg>"),
     ),
+    pico=False,
+    title="FC IMM Tracker",
     live=not IS_PRODUCTION,   # Auto-reload in dev only, not in production
 )
 
@@ -627,21 +841,12 @@ def index(category: str = "", disposition: str = "", judge: str = "",
                             disposition=disposition, judge=judge,
                             nationality=nationality)
 
-    return Container(
-        page_header("cases"),
-        Div(
-            filter_bar(cases, category=category, disposition=disposition,
-                       judge=judge, nationality=nationality, query=query),
-            Div(case_list_fragment(filtered, page=0), id="case-list"),
-            id="main-content",
-        ),
-        # Back-to-top button — fades in when you scroll down
+    back_to_top = (
         Button(
             UkIcon("arrow-up", height=16),
             id="back-to-top",
             onclick="window.scrollTo({top:0, behavior:'smooth'})",
         ),
-        # Scroll listener — show/hide the button
         Script("""
             window.addEventListener('scroll', function() {
                 var btn = document.getElementById('back-to-top');
@@ -652,6 +857,47 @@ def index(category: str = "", disposition: str = "", judge: str = "",
                 }
             });
         """),
+    )
+
+    if LAYOUT == "slide":
+        return Container(
+            page_header("cases"),
+            *filter_slide_panel(cases, category=category, disposition=disposition,
+                                judge=judge, nationality=nationality, query=query),
+            Div(case_list_fragment(filtered, page=0), id="case-list"),
+            *back_to_top,
+            cls="max-w-2xl mx-auto px-4",
+        )
+
+    if LAYOUT == "sidebar":
+        return Container(
+            page_header("cases"),
+            Div(
+                Aside(
+                    filter_sidebar(cases, category=category, disposition=disposition,
+                                   judge=judge, nationality=nationality, query=query),
+                    cls="w-48 shrink-0 sticky top-4 self-start hidden lg:block",
+                ),
+                Div(
+                    Div(case_list_fragment(filtered, page=0), id="case-list"),
+                    cls="flex-1 min-w-0",
+                ),
+                cls="flex gap-8",
+            ),
+            *back_to_top,
+            cls="max-w-5xl mx-auto px-4",
+        )
+
+    # ── "inline" — original single-column layout ──
+    return Container(
+        page_header("cases"),
+        Div(
+            filter_bar(cases, category=category, disposition=disposition,
+                       judge=judge, nationality=nationality, query=query),
+            Div(case_list_fragment(filtered, page=0), id="case-list"),
+            id="main-content",
+        ),
+        *back_to_top,
         cls="max-w-2xl mx-auto px-4",
     )
 
@@ -728,7 +974,9 @@ def stats():
                 f", ",
                 cases_link(f"{s['dismissed']} were dismissed", disposition="dismissed"),
                 *(
-                    [", and ", cases_link(f"{s['granted_in_part']} were granted in part", disposition="granted_in_part")]
+                    [", and ", cases_link(
+                        f"{s['granted_in_part']} {'was' if s['granted_in_part'] == 1 else 'were'} granted in part",
+                        disposition="granted_in_part")]
                     if s['granted_in_part'] else []
                 ),
                 f". The overall grant rate was {s['grant_rate']:.1f}%.",

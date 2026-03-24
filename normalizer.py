@@ -156,6 +156,8 @@ NATIONALITY_MAP = {
     "north korean": "North Korea",
     "pakistani": "Pakistan",
     "palestinian": "Palestine",
+    "palestinian territory": "Palestine",
+    "palestinian territories": "Palestine",
     "peruvian": "Peru",
     "polish": "Poland",
     "romanian": "Romania",
